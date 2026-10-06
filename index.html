@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<title>Mileage</title>
+<style>
+:root{--ivory:#F4F0E7;--navy:#0A1F58;--coral:#FF2C58;--cobalt:#334CA8;--blush:#F3D6D0;--white:#fff}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--ivory);color:var(--navy);font:17px/1.45 -apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif;
+  padding:max(24px,env(safe-area-inset-top)) 20px max(40px,env(safe-area-inset-bottom));min-height:100vh}
+main{max-width:480px;margin:0 auto}
+h1{font-size:13px;letter-spacing:.14em;text-transform:uppercase;color:var(--cobalt);margin:0 0 20px;font-weight:600}
+h2{font-size:26px;line-height:1.2;margin:0 0 6px;font-weight:650}
+p{margin:0 0 16px}
+.muted{color:var(--cobalt);font-size:15px}
+label{display:block;font-size:14px;font-weight:600;margin:18px 0 6px}
+input[type=text],input[type=url],input[type=password]{width:100%;font:inherit;padding:14px;border:1.5px solid var(--navy);
+  border-radius:12px;background:var(--white);color:var(--navy)}
+input:focus{outline:3px solid var(--cobalt);outline-offset:1px}
+.chips{display:flex;flex-wrap:wrap;gap:10px;margin:4px 0 4px}
+.chip{font:inherit;font-weight:600;padding:12px 16px;border-radius:999px;border:1.5px solid var(--navy);background:var(--white);color:var(--navy);cursor:pointer}
+.chip[aria-pressed=true]{background:var(--navy);color:var(--ivory)}
+.btn{display:block;width:100%;font:inherit;font-weight:700;font-size:19px;padding:18px;border:0;border-radius:14px;
+  background:var(--coral);color:var(--white);margin-top:26px;cursor:pointer}
+.btn.navy{background:var(--navy)}
+.btn:disabled{opacity:.45}
+.card{background:var(--white);border-radius:16px;padding:20px;margin-top:14px}
+.err{background:var(--blush);border-radius:12px;padding:14px;margin:16px 0}
+.link{background:none;border:0;color:var(--cobalt);font:inherit;font-size:14px;text-decoration:underline;margin-top:28px;padding:0;cursor:pointer}
+.spin{width:28px;height:28px;border:3px solid var(--blush);border-top-color:var(--coral);border-radius:50%;animation:s 0.9s linear infinite;margin:6px 0 16px}
+@keyframes s{to{transform:rotate(360deg)}}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main>
+<h1>Mileage</h1>
+
+<section id="loading">
+  <div class="spin" aria-hidden="true"></div>
+  <h2>One moment</h2>
+  <p class="muted" id="loadmsg">Finding your location...</p>
+</section>
+
+<section id="setup" hidden>
+  <h2>One-time setup</h2>
+  <p class="muted">These stay on this phone only.</p>
+  <label for="url">Web app URL</label>
+  <input id="url" type="url" inputmode="url" autocapitalize="off" autocorrect="off" placeholder="https://script.google.com/macros/s/.../exec">
+  <label for="token">Secret token</label>
+  <input id="token" type="password" autocapitalize="off" autocorrect="off" autocomplete="off">
+  <div id="setuperr" class="err" hidden></div>
+  <button class="btn navy" id="savesetup">Save</button>
+</section>
+
+<section id="start" hidden>
+  <h2>Starting a trip</h2>
+  <p class="muted">Pick a client and tap Start.</p>
+  <label>Client</label>
+  <div class="chips" id="chips"></div>
+  <input id="newclient" type="text" placeholder="Client name" autocapitalize="words" hidden>
+  <label for="purpose">Purpose</label>
+  <input id="purpose" type="text" placeholder="Showing, listing appointment, inspection..." autocapitalize="sentences">
+  <div id="starterr" class="err" hidden></div>
+  <button class="btn" id="startbtn">Start trip</button>
+</section>
+
+<section id="end" hidden>
+  <h2>Trip in progress</h2>
+  <div class="card"><span class="muted">Client</span><br><strong id="endclient"></strong></div>
+  <div id="endnote" class="err" hidden></div>
+  <div id="enderr" class="err" hidden></div>
+  <button class="btn" id="endbtn">End trip</button>
+  <button class="link" id="keepbtn" hidden>Keep this trip open</button>
+</section>
+
+<section id="done" hidden>
+  <h2 id="donemsg"></h2>
+  <p class="muted">You can close this page.</p>
+</section>
+
+<section id="fail" hidden>
+  <h2>That did not work</h2>
+  <div class="err" id="failmsg"></div>
+  <button class="btn navy" id="retry">Try again</button>
+</section>
+
+<button class="link" id="settings" hidden>Change settings</button>
+</main>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var store = {
+    get: function (k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } },
+    set: function (k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+  };
+  var SECTIONS = ['loading', 'setup', 'start', 'end', 'done', 'fail'];
+  var JUST_STARTED_MIN = 3; // warn before ending a trip younger than this
+  var pos = null, selected = '', clients = [];
+
+  function show(name) {
+    SECTIONS.forEach(function (s) { $(s).hidden = (s !== name); });
+    $('settings').hidden = (name === 'setup' || name === 'loading');
+  }
+  function showErr(id, msg) { var el = $(id); el.textContent = msg; el.hidden = !msg; }
+
+  // Optional ?u= prefill so the NFC link can carry the web app URL.
+  var qs = new URLSearchParams(location.search);
+  if (qs.get('u')) {
+    store.set('url', qs.get('u'));
+    try { history.replaceState(null, '', location.pathname); } catch (e) {}
+  }
+
+  function api(body) {
+    var payload = Object.assign({ token: store.get('token') }, body);
+    // text/plain keeps this a "simple" request, so the browser skips the CORS preflight Apps Script can't answer.
+    return fetch(store.get('url'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload)
+    }).then(function (r) { return r.text(); }).then(function (t) {
+      try { return JSON.parse(t); } catch (e) {
+        var err = new Error('The server gave an unexpected reply. Wait a few seconds and try again.');
+        err.server = true;
+        throw err;
+      }
+    });
+  }
+  function netMsg(err) {
+    // Network failures from fetch are TypeErrors; everything else already carries a readable message.
+    return (err && !(err instanceof TypeError) && err.message) ? err.message : 'No connection. Check your signal and try again.';
+  }
+
+  function getPos() {
+    return new Promise(function (resolve, reject) {
+      if (!navigator.geolocation) return reject(new Error('Location is not available in this browser.'));
+      navigator.geolocation.getCurrentPosition(
+        function (p) { resolve(p.coords); },
+        function (e) {
+          reject(new Error(e.code === 1
+            ? 'Location is blocked. On your iPhone: Settings > Privacy & Security > Location Services > Safari Websites > While Using, then reload.'
+            : 'Could not get your location. Check your signal and try again.'));
+        },
+        { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
+      );
+    });
+  }
+
+  function fail(msg) { $('failmsg').textContent = msg; show('fail'); }
+
+  function renderChips() {
+    var box = $('chips');
+    box.textContent = '';
+    var names = clients.concat(['+ New client']);
+    names.forEach(function (name) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'chip';
+      b.textContent = name;
+      b.setAttribute('aria-pressed', 'false');
+      b.addEventListener('click', function () { choose(name); });
+      box.appendChild(b);
+    });
+    if (!clients.length) { choose('+ New client'); }
+  }
+  function choose(name) {
+    selected = name;
+    Array.prototype.forEach.call($('chips').children, function (c) {
+      c.setAttribute('aria-pressed', c.textContent === name ? 'true' : 'false');
+    });
+    var isNew = (name === '+ New client');
+    $('newclient').hidden = !isNew;
+    if (isNew) $('newclient').focus();
+  }
+
+  function init() {
+    showErr('starterr', ''); showErr('enderr', '');
+    if (!store.get('url') || !store.get('token')) {
+      $('url').value = store.get('url'); $('token').value = store.get('token');
+      return show('setup');
+    }
+    show('loading');
+    $('loadmsg').textContent = 'Finding your location...';
+    Promise.all([api({ action: 'status' }), getPos()]).then(function (res) {
+      var st = res[0]; pos = res[1];
+      if (!st || st.ok === false) {
+        if (st && /token/i.test(st.message || '')) {
+          showErr('setuperr', 'That token was not accepted. Check it and save again.');
+          return show('setup');
+        }
+        return fail((st && st.message) || 'The server did not respond as expected.');
+      }
+      if (st.open === 'yes') {
+        $('endclient').textContent = st.client || 'Client';
+        var recent = typeof st.minutes === 'number' && st.minutes < JUST_STARTED_MIN;
+        var ago = st.minutes < 1 ? 'less than a minute' : st.minutes + (st.minutes === 1 ? ' minute' : ' minutes');
+        showErr('endnote', recent ? 'This trip started ' + ago + ' ago. Ending it now will log about 0 miles.' : '');
+        $('endbtn').textContent = recent ? 'End anyway' : 'End trip';
+        $('endbtn').className = recent ? 'btn navy' : 'btn';
+        $('endbtn').disabled = false;
+        $('keepbtn').hidden = !recent;
+        show('end');
+      } else {
+        clients = (st.clients || []).slice(0, 10);
+        $('purpose').value = store.get('purpose');
+        renderChips();
+        show('start');
+      }
+    }).catch(function (err) {
+      fail(netMsg(err));
+    });
+  }
+
+  $('savesetup').addEventListener('click', function () {
+    var u = $('url').value.trim(), t = $('token').value.trim();
+    if (!/^https:\/\/script\.google\.com\/.+/.test(u)) return showErr('setuperr', 'That does not look like an Apps Script web app URL.');
+    if (!t) return showErr('setuperr', 'Enter your secret token.');
+    store.set('url', u); store.set('token', t);
+    showErr('setuperr', '');
+    init();
+  });
+
+  $('startbtn').addEventListener('click', function () {
+    var client = selected === '+ New client' ? $('newclient').value.trim() : selected;
+    if (!client) return showErr('starterr', 'Pick a client or type a name.');
+    var purpose = $('purpose').value.trim();
+    store.set('purpose', purpose);
+    var btn = $('startbtn'); btn.disabled = true; showErr('starterr', '');
+    api({ action: 'start', client: client, purpose: purpose, lat: pos.latitude, lng: pos.longitude })
+      .then(function (r) {
+        if (!r || r.ok === false) { btn.disabled = false; return showErr('starterr', (r && r.message) || 'Could not start the trip.'); }
+        $('donemsg').textContent = r.message || 'Trip started.';
+        show('done');
+      })
+      .catch(function (err) { btn.disabled = false; showErr('starterr', netMsg(err)); });
+  });
+
+  $('endbtn').addEventListener('click', function () {
+    var btn = $('endbtn'); btn.disabled = true; showErr('enderr', '');
+    api({ action: 'end', lat: pos.latitude, lng: pos.longitude })
+      .then(function (r) {
+        if (!r || r.ok === false) { btn.disabled = false; return showErr('enderr', (r && r.message) || 'Could not end the trip.'); }
+        $('donemsg').textContent = r.message || 'Trip ended.';
+        show('done');
+      })
+      .catch(function (err) { btn.disabled = false; showErr('enderr', netMsg(err)); });
+  });
+
+  $('keepbtn').addEventListener('click', function () {
+    $('donemsg').textContent = 'Trip is still open.';
+    show('done');
+  });
+
+  $('retry').addEventListener('click', init);
+  $('settings').addEventListener('click', function () {
+    $('url').value = store.get('url'); $('token').value = store.get('token'); show('setup');
+  });
+
+  init();
+})();
+</script>
+</body>
+</html>
